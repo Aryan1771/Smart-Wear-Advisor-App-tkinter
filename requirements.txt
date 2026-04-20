@@ -1,0 +1,13 @@
+kagglehub
+face-recognition
+opencv-python
+pillow
+numpy
+fastapi
+uvicorn
+opencv-python-headless
+python-multipart
+opencv-stubs
+dlib
+requests
+tensorflow==2.13.0
