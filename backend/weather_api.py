@@ -3,7 +3,7 @@ import requests
 
 def get_weather(query):
     # Use the actual key string directly if not using environment variables
-    api_key = "48011be42f7f029c2a46a46a2df97124"
+    api_key = ""
     
     # Default fallback data
     fallback = {
