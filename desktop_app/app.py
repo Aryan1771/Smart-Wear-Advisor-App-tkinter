@@ -17,7 +17,6 @@ try:
     from backend.recommendation_engine import generate_recommendation
     from backend.weather_api import get_weather
     from core.accessory_engine import AccessoryDetector
-    from core.face_engine import recognize_face
 except ModuleNotFoundError:
     import sys
 
@@ -27,7 +26,6 @@ except ModuleNotFoundError:
     from backend.recommendation_engine import generate_recommendation
     from backend.weather_api import get_weather
     from core.accessory_engine import AccessoryDetector
-    from core.face_engine import recognize_face
 
 
 APP_DIR = Path(__file__).resolve().parents[1]
@@ -37,17 +35,23 @@ USERS_FILE = DATA_DIR / "registered_users.json"
 ENCODINGS_DIR.mkdir(parents=True, exist_ok=True)
 USERS_FILE.parent.mkdir(parents=True, exist_ok=True)
 
-BG_PRIMARY = "#0d1117"
-BG_PANEL = "#161b22"
-BG_CARD = "#1f2937"
-BG_ACCENT = "#238636"
-BG_BUTTON = "#21262d"
-TEXT_PRIMARY = "#f0f6fc"
-TEXT_SECONDARY = "#8b949e"
-TEXT_SUCCESS = "#3fb950"
-TEXT_WARNING = "#f2cc60"
-TEXT_DANGER = "#ff7b72"
-CAMERA_SIZE = (960, 540)
+BG_PRIMARY = "#07111f"
+BG_SIDEBAR = "#081427"
+BG_PANEL = "#0f1d33"
+BG_CARD = "#152846"
+BG_SOFT = "#1b3559"
+BG_BUTTON = "#203b5f"
+ACCENT = "#5cd6ff"
+ACCENT_STRONG = "#00a9e0"
+SUCCESS = "#78f0b1"
+WARNING = "#f7c97c"
+DANGER = "#ff8e93"
+TEXT_PRIMARY = "#e8f0fb"
+TEXT_SECONDARY = "#9fb2c8"
+TEXT_DIM = "#7f97b1"
+CAMERA_SIZE = (960, 600)
+SCAN_WINDOW_MS = 7000
+RECOGNITION_STREAK = 6
 
 
 def require_face_recognition():
@@ -113,14 +117,12 @@ class FaceRegistry:
         if not cleaned_name:
             raise ValueError("Name is required for registration.")
 
-        file_name = f"{cleaned_name}.npy"
-        np.save(ENCODINGS_DIR / file_name, face_encoding)
-
+        np.save(ENCODINGS_DIR / f"{cleaned_name}.npy", face_encoding)
         profiles = load_json_file(USERS_FILE, {})
         profiles[cleaned_name] = {
             "name": cleaned_name,
             "registered_on": datetime.now().strftime("%d %b %Y, %I:%M %p"),
-            "notes": "Registered with clear face capture for SmartWear Advisor.",
+            "notes": "Registered from the desktop SmartWear camera with a clear face capture.",
         }
         save_json_file(USERS_FILE, profiles)
         self.reload()
@@ -129,226 +131,230 @@ class FaceRegistry:
 class SmartWearApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("SmartWear Advisor")
+        self.root.title("SmartWear Advisor Desktop")
         self.root.configure(bg=BG_PRIMARY)
-        self.root.geometry("1380x820")
-        self.root.minsize(1200, 760)
+        self.root.geometry("1460x880")
+        self.root.minsize(1280, 780)
 
         self.registry = FaceRegistry()
         self.accessory_detector = AccessoryDetector()
 
         self.cap = None
         self.running = False
+        self.paused = False
+        self.recognition_started_at = None
         self.detected_name = None
         self.recognition_streak = 0
         self.details_window = None
         self.latest_frame = None
+        self.latest_face_box = None
+        self.latest_face_encoding = None
         self.last_detection = None
+
         self.weather_city = tk.StringVar(value="Delhi")
-        self.status_text = tk.StringVar(value="Camera idle. Start live recognition to begin.")
-        self.overlay_text = tk.StringVar(value="Face registration requires a clean face capture.")
-        self.recognition_text = tk.StringVar(value="Waiting for a registered face")
-        self.accessory_text = tk.StringVar(value="Accessories: --")
-        self.user_text = tk.StringVar(value="User profile not loaded")
-        # accessory_engine may not provide `status_summary`; fall back safely
-        status_summary = getattr(self.accessory_detector, "status_summary", lambda: "Accessory detector ready")()
-        self.model_text = tk.StringVar(value=status_summary)
+        self.status_text = tk.StringVar(value="Ready when you are.")
+        self.location_text = tk.StringVar(value="Using your chosen city for weather-aware guidance.")
+        self.camera_state_text = tk.StringVar(value="Idle")
+        self.identity_text = tk.StringVar(value="Awaiting face")
+        self.accessory_text = tk.StringVar(value="Mask and glasses detection will appear here.")
+        self.model_text = tk.StringVar(value=self.accessory_detector.status_summary())
+        self.user_text = tk.StringVar(value="No registered user in focus.")
+        self.weather_status_text = tk.StringVar(value="Weather pending")
+        self.weather_meta_text = tk.StringVar(value="Humidity -- | Condition --")
 
         self.build_layout()
+        self.refresh_weather()
+        self.update_button_state()
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
 
     def build_layout(self):
-        header = tk.Frame(self.root, bg=BG_PRIMARY)
-        header.pack(fill="x", padx=24, pady=(20, 12))
+        shell = tk.Frame(self.root, bg=BG_PRIMARY)
+        shell.pack(fill="both", expand=True)
+        shell.grid_columnconfigure(0, weight=0)
+        shell.grid_columnconfigure(1, weight=1)
+        shell.grid_rowconfigure(0, weight=1)
 
-        tk.Label(
-            header,
-            text="SmartWear Advisor",
-            font=("Segoe UI Semibold", 24),
-            fg=TEXT_PRIMARY,
-            bg=BG_PRIMARY,
-        ).pack(anchor="w")
-        tk.Label(
-            header,
-            text="Dark-theme face recognition, accessory awareness, and recommendation dashboard.",
+        self.build_sidebar(shell)
+        self.build_main(shell)
+
+    def build_sidebar(self, parent):
+        sidebar = tk.Frame(parent, bg=BG_SIDEBAR, width=290)
+        sidebar.grid(row=0, column=0, sticky="nsw")
+        sidebar.grid_propagate(False)
+
+        brand = tk.Frame(sidebar, bg=BG_PANEL, highlightbackground="#233c61", highlightthickness=1)
+        brand.pack(fill="x", padx=18, pady=(18, 14))
+        tk.Label(brand, text="SMARTWEAR", font=("Segoe UI", 11, "bold"), fg=TEXT_DIM, bg=BG_PANEL).pack(anchor="w", padx=18, pady=(16, 2))
+        tk.Label(brand, text="Advisor Desktop", font=("Segoe UI Semibold", 21), fg=TEXT_PRIMARY, bg=BG_PANEL).pack(anchor="w", padx=18, pady=(0, 16))
+
+        for label in ("Scanner", "Desktop dashboard", "Weather-aware mode"):
+            tk.Label(sidebar, text=label, font=("Segoe UI", 11), fg=TEXT_SECONDARY, bg=BG_SIDEBAR).pack(anchor="w", padx=24, pady=(4, 6))
+
+        weather = tk.Frame(sidebar, bg=BG_PANEL, highlightbackground="#233c61", highlightthickness=1)
+        weather.pack(fill="x", padx=18, pady=(18, 14))
+        tk.Label(weather, text="Local weather", font=("Segoe UI", 10, "bold"), fg=TEXT_DIM, bg=BG_PANEL).pack(anchor="w", padx=18, pady=(16, 6))
+        tk.Label(weather, textvariable=self.weather_status_text, font=("Segoe UI Semibold", 16), fg=TEXT_PRIMARY, bg=BG_PANEL, wraplength=220, justify="left").pack(anchor="w", padx=18)
+        tk.Label(weather, textvariable=self.weather_meta_text, font=("Segoe UI", 10), fg=TEXT_SECONDARY, bg=BG_PANEL, wraplength=220, justify="left").pack(anchor="w", padx=18, pady=(8, 16))
+
+        controls = tk.Frame(sidebar, bg=BG_PANEL, highlightbackground="#233c61", highlightthickness=1)
+        controls.pack(fill="x", padx=18, pady=(0, 14))
+        tk.Label(controls, text="Session controls", font=("Segoe UI Semibold", 14), fg=TEXT_PRIMARY, bg=BG_PANEL).pack(anchor="w", padx=18, pady=(16, 10))
+        tk.Label(controls, text="Weather city", font=("Segoe UI", 10), fg=TEXT_SECONDARY, bg=BG_PANEL).pack(anchor="w", padx=18)
+        self.city_entry = tk.Entry(
+            controls,
+            textvariable=self.weather_city,
             font=("Segoe UI", 11),
-            fg=TEXT_SECONDARY,
-            bg=BG_PRIMARY,
-        ).pack(anchor="w", pady=(4, 0))
+            bg=BG_SOFT,
+            fg=TEXT_PRIMARY,
+            insertbackground=TEXT_PRIMARY,
+            relief="flat",
+        )
+        self.city_entry.pack(fill="x", padx=18, pady=(6, 10), ipady=8)
+        self.city_entry.bind("<Return>", lambda _event: self.refresh_weather())
 
-        body = tk.Frame(self.root, bg=BG_PRIMARY)
-        body.pack(fill="both", expand=True, padx=24, pady=(0, 20))
-        body.grid_columnconfigure(0, weight=3)
-        body.grid_columnconfigure(1, weight=2)
-        body.grid_rowconfigure(0, weight=1)
+        self.start_button = self.make_button(controls, "Start scan", self.start_camera, fill=ACCENT)
+        self.start_button.pack(fill="x", padx=18, pady=(0, 10))
+        self.stop_button = self.make_button(controls, "Stop scan", self.stop_camera)
+        self.stop_button.pack(fill="x", padx=18, pady=(0, 10))
+        self.register_button = self.make_button(controls, "Register face", self.register_current_face, fill=SUCCESS)
+        self.register_button.pack(fill="x", padx=18, pady=(0, 18))
 
-        self.build_camera_panel(body)
-        self.build_side_panel(body)
+    def build_main(self, parent):
+        page = tk.Frame(parent, bg=BG_PRIMARY)
+        page.grid(row=0, column=1, sticky="nsew", padx=(18, 20), pady=18)
+        page.grid_columnconfigure(0, weight=5)
+        page.grid_columnconfigure(1, weight=3)
+        page.grid_rowconfigure(1, weight=1)
 
-    def build_camera_panel(self, parent):
-        panel = tk.Frame(parent, bg=BG_PANEL, bd=0, highlightthickness=0)
-        panel.grid(row=0, column=0, sticky="nsew", padx=(0, 16))
-        panel.grid_rowconfigure(0, weight=1)
-        panel.grid_columnconfigure(0, weight=1)
+        header = tk.Frame(page, bg=BG_PRIMARY)
+        header.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 16))
+        tk.Label(header, text="LIVE SCANNER", font=("Segoe UI", 10, "bold"), fg=TEXT_DIM, bg=BG_PRIMARY).pack(anchor="w")
+        tk.Label(header, text="Weather-aware face and accessory recognition", font=("Segoe UI Semibold", 28), fg=TEXT_PRIMARY, bg=BG_PRIMARY).pack(anchor="w", pady=(4, 0))
+
+        hero = tk.Frame(page, bg=BG_PANEL, highlightbackground="#233c61", highlightthickness=1)
+        hero.grid(row=1, column=0, sticky="nsew", padx=(0, 16))
+        hero.grid_columnconfigure(0, weight=1)
+        hero.grid_rowconfigure(1, weight=1)
+
+        topcopy = tk.Frame(hero, bg=BG_PANEL)
+        topcopy.grid(row=0, column=0, sticky="ew", padx=20, pady=(20, 8))
+        tk.Label(topcopy, text="Desktop aligned with the browser flow", font=("Segoe UI", 10, "bold"), fg=ACCENT, bg=BG_PANEL).pack(anchor="w")
+        tk.Label(topcopy, text="Keep your face inside the guide. If there is no match after a short scan, the app pauses safely and waits for registration.", font=("Segoe UI Semibold", 22), fg=TEXT_PRIMARY, bg=BG_PANEL, wraplength=700, justify="left").pack(anchor="w", pady=(12, 10))
+        tk.Label(topcopy, text="Use the live camera to recognize registered users, check mask and glasses status, and open a weather-aware detail panel without leaving the desktop app.", font=("Segoe UI", 11), fg=TEXT_SECONDARY, bg=BG_PANEL, wraplength=720, justify="left").pack(anchor="w")
+
+        status_grid = tk.Frame(hero, bg=BG_PANEL)
+        status_grid.grid(row=1, column=0, sticky="nsew", padx=20, pady=(6, 20))
+        for column in range(2):
+            status_grid.grid_columnconfigure(column, weight=1)
+
+        self.build_status_card(status_grid, "Recognition status", self.status_text, 0, 0)
+        self.build_status_card(status_grid, "Location status", self.location_text, 0, 1)
+        self.build_status_card(status_grid, "Camera state", self.camera_state_text, 1, 0)
+        self.build_status_card(status_grid, "Model status", self.model_text, 1, 1)
+
+        camera_panel = tk.Frame(page, bg=BG_PANEL, highlightbackground="#233c61", highlightthickness=1)
+        camera_panel.grid(row=1, column=1, sticky="nsew")
+        camera_panel.grid_rowconfigure(0, weight=1)
+        camera_panel.grid_columnconfigure(0, weight=1)
 
         self.camera_label = tk.Label(
-            panel,
-            bg="#05070a",
+            camera_panel,
+            bg="#040a12",
             fg=TEXT_PRIMARY,
             text="Camera preview will appear here",
             font=("Segoe UI", 16),
         )
         self.camera_label.grid(row=0, column=0, sticky="nsew", padx=18, pady=18)
 
-        camera_footer = tk.Frame(panel, bg=BG_PANEL)
-        camera_footer.grid(row=1, column=0, sticky="ew", padx=18, pady=(0, 18))
-        camera_footer.grid_columnconfigure(0, weight=1)
+        caption = tk.Frame(camera_panel, bg=BG_CARD, highlightbackground="#2b476f", highlightthickness=1)
+        caption.grid(row=1, column=0, sticky="ew", padx=18, pady=(0, 12))
+        tk.Label(caption, textvariable=self.identity_text, font=("Segoe UI Semibold", 18), fg=TEXT_PRIMARY, bg=BG_CARD).pack(anchor="w", padx=16, pady=(14, 4))
+        tk.Label(caption, textvariable=self.accessory_text, font=("Segoe UI", 10), fg=TEXT_SECONDARY, bg=BG_CARD, wraplength=360, justify="left").pack(anchor="w", padx=16, pady=(0, 14))
 
-        tk.Label(
-            camera_footer,
-            textvariable=self.status_text,
-            font=("Segoe UI", 10),
-            fg=TEXT_SECONDARY,
-            bg=BG_PANEL,
-            anchor="w",
-            justify="left",
-        ).grid(row=0, column=0, sticky="w")
+        notes = tk.Frame(camera_panel, bg=BG_PANEL)
+        notes.grid(row=2, column=0, sticky="ew", padx=18, pady=(0, 18))
+        tk.Label(notes, text="Register only when the current face is centered and visible without extra motion. The app pauses safely instead of scanning forever.", font=("Segoe UI", 10), fg=TEXT_SECONDARY, bg=BG_PANEL, wraplength=360, justify="left").pack(anchor="w")
+        tk.Label(notes, textvariable=self.user_text, font=("Segoe UI", 10), fg=TEXT_PRIMARY, bg=BG_PANEL, wraplength=360, justify="left").pack(anchor="w", pady=(10, 0))
 
-        tk.Label(
-            camera_footer,
-            textvariable=self.overlay_text,
-            font=("Segoe UI", 10),
-            fg=TEXT_WARNING,
-            bg=BG_PANEL,
-            anchor="e",
-            justify="right",
-        ).grid(row=0, column=1, sticky="e")
+    def build_status_card(self, parent, title, text_var, row, column):
+        card = tk.Frame(parent, bg=BG_CARD, highlightbackground="#2b476f", highlightthickness=1)
+        card.grid(row=row, column=column, sticky="nsew", padx=(0, 12) if column == 0 else (0, 0), pady=(0, 12))
+        tk.Label(card, text=title, font=("Segoe UI", 10), fg=TEXT_DIM, bg=BG_CARD).pack(anchor="w", padx=16, pady=(14, 4))
+        tk.Label(card, textvariable=text_var, font=("Segoe UI Semibold", 14), fg=TEXT_PRIMARY, bg=BG_CARD, wraplength=320, justify="left").pack(anchor="w", padx=16, pady=(0, 14))
 
-    def build_side_panel(self, parent):
-        panel = tk.Frame(parent, bg=BG_PRIMARY)
-        panel.grid(row=0, column=1, sticky="nsew")
-        panel.grid_columnconfigure(0, weight=1)
-
-        controls = tk.Frame(panel, bg=BG_PANEL)
-        controls.grid(row=0, column=0, sticky="ew", pady=(0, 16))
-
-        tk.Label(
-            controls,
-            text="Session Controls",
-            font=("Segoe UI Semibold", 14),
-            fg=TEXT_PRIMARY,
-            bg=BG_PANEL,
-        ).pack(anchor="w", padx=18, pady=(18, 6))
-
-        tk.Label(
-            controls,
-            text="Weather city",
-            font=("Segoe UI", 10),
-            fg=TEXT_SECONDARY,
-            bg=BG_PANEL,
-        ).pack(anchor="w", padx=18)
-
-        tk.Entry(
-            controls,
-            textvariable=self.weather_city,
-            font=("Segoe UI", 11),
-            bg=BG_BUTTON,
-            fg=TEXT_PRIMARY,
-            insertbackground=TEXT_PRIMARY,
-            relief="flat",
-        ).pack(fill="x", padx=18, pady=(6, 12))
-
-        button_row = tk.Frame(controls, bg=BG_PANEL)
-        button_row.pack(fill="x", padx=18, pady=(0, 18))
-
-        self.make_button(button_row, "Start Camera", self.start_camera).pack(fill="x", pady=(0, 10))
-        self.make_button(button_row, "Stop Camera", self.stop_camera).pack(fill="x", pady=(0, 10))
-        self.make_button(button_row, "Register Face", self.open_registration).pack(fill="x")
-
-        self.build_status_card(panel, "Model Status", self.model_text, row=1)
-        self.build_status_card(panel, "Recognition", self.recognition_text, row=2)
-        self.build_status_card(panel, "Accessory Summary", self.accessory_text, row=3)
-        self.build_status_card(panel, "Registered User", self.user_text, row=4)
-
-        dataset_card = tk.Frame(panel, bg=BG_CARD)
-        dataset_card.grid(row=5, column=0, sticky="ew")
-        tk.Label(
-            dataset_card,
-            text="Training Note",
-            font=("Segoe UI Semibold", 13),
-            fg=TEXT_PRIMARY,
-            bg=BG_CARD,
-        ).pack(anchor="w", padx=18, pady=(18, 8))
-        tk.Label(
-            dataset_card,
-            text=(
-                "Train separate mask and glasses classifiers with two classes each:\n"
-                "with_mask / without_mask and with_glasses / without_glasses."
-            ),
-            font=("Segoe UI", 10),
-            fg=TEXT_SECONDARY,
-            bg=BG_CARD,
-            justify="left",
-        ).pack(anchor="w", padx=18, pady=(0, 18))
-
-    def build_status_card(self, parent, title, text_var, row):
-        card = tk.Frame(parent, bg=BG_CARD)
-        card.grid(row=row, column=0, sticky="ew", pady=(0, 16))
-        tk.Label(
-            card,
-            text=title,
-            font=("Segoe UI Semibold", 13),
-            fg=TEXT_PRIMARY,
-            bg=BG_CARD,
-        ).pack(anchor="w", padx=18, pady=(18, 8))
-        tk.Label(
-            card,
-            textvariable=text_var,
-            font=("Segoe UI", 10),
-            fg=TEXT_SECONDARY,
-            bg=BG_CARD,
-            justify="left",
-            wraplength=360,
-        ).pack(anchor="w", padx=18, pady=(0, 18))
-
-    def make_button(self, parent, label, command):
+    def make_button(self, parent, label, command, fill=None):
+        button_fill = fill or BG_BUTTON
+        button_fg = "#04111d" if fill in (ACCENT, SUCCESS) else TEXT_PRIMARY
         return tk.Button(
             parent,
             text=label,
             command=command,
             font=("Segoe UI Semibold", 11),
-            bg=BG_BUTTON,
-            fg=TEXT_PRIMARY,
-            activebackground=BG_ACCENT,
-            activeforeground=TEXT_PRIMARY,
+            bg=button_fill,
+            fg=button_fg,
+            activebackground=ACCENT_STRONG if fill == ACCENT else button_fill,
+            activeforeground=button_fg,
             relief="flat",
+            bd=0,
             padx=12,
             pady=10,
             cursor="hand2",
         )
 
+    def update_button_state(self):
+        self.start_button.configure(state="disabled" if self.running and not self.paused else "normal")
+        self.stop_button.configure(state="normal" if self.running else "disabled")
+        self.register_button.configure(state="normal" if self.running or self.latest_frame is not None else "disabled")
+
+    def refresh_weather(self):
+        city = self.weather_city.get().strip() or "Delhi"
+        weather = get_weather(city)
+        self.weather_status_text.set(f"{weather.get('city', city)} | {weather.get('temp', '--')} C")
+        self.weather_meta_text.set(f"Humidity {weather.get('humidity', '--')}% | {weather.get('description', weather.get('condition', 'Unavailable'))}")
+
     def start_camera(self):
-        if self.running:
+        if self.running and not self.paused:
             return
 
-        self.cap = cv2.VideoCapture(0)
-        if not self.cap.isOpened():
+        if self.cap is None:
+            self.cap = cv2.VideoCapture(0)
+        if not self.cap or not self.cap.isOpened():
             messagebox.showerror("Camera Error", "Unable to access the webcam. Please check camera permissions.")
+            self.cap = None
             return
 
         self.running = True
+        self.paused = False
+        self.recognition_started_at = datetime.now()
         self.detected_name = None
         self.recognition_streak = 0
-        self.status_text.set("Camera active. Looking for the closest face in frame.")
-        self.recognition_text.set("Scanning for registered users...")
+        self.latest_face_box = None
+        self.latest_face_encoding = None
+        self.camera_state_text.set("Scanning")
+        self.status_text.set("Camera live. Hold your face inside the guide.")
+        self.location_text.set(f"Weather locked to {self.weather_city.get().strip() or 'Delhi'} for recommendations.")
+        self.update_button_state()
         self.update_frame()
 
     def stop_camera(self):
         self.running = False
+        self.paused = False
         if self.cap is not None:
             self.cap.release()
             self.cap = None
-        self.status_text.set("Camera stopped. You can restart recognition anytime.")
+        self.camera_state_text.set("Stopped")
+        self.status_text.set("Camera stopped. Nothing is being processed right now.")
+        self.update_button_state()
+
+    def pause_scan(self):
+        self.running = False
+        self.paused = True
+        if self.cap is not None:
+            self.cap.release()
+            self.cap = None
+        self.camera_state_text.set("Paused")
+        self.status_text.set("No registered match found after the scan window. Register this face or start again.")
+        self.update_button_state()
 
     def update_frame(self):
         if not self.running or self.cap is None:
@@ -362,9 +368,10 @@ class SmartWearApp:
 
         frame = cv2.flip(frame, 1)
         self.latest_frame = frame.copy()
+        display_frame = frame.copy()
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-        face_locations = face_recognition.face_locations(rgb_frame)
+        face_locations = face_recognition.face_locations(rgb_frame, model="hog")
         face_locations = sorted(
             face_locations,
             key=lambda face: (face[2] - face[0]) * (face[1] - face[3]),
@@ -376,6 +383,9 @@ class SmartWearApp:
             encodings = face_recognition.face_encodings(rgb_frame, [primary_face])
             if encodings:
                 face_encoding = encodings[0]
+                self.latest_face_box = primary_face
+                self.latest_face_encoding = face_encoding
+
                 name, profile = self.registry.recognize(face_encoding)
                 accessory_status = self.accessory_detector.analyze(frame, primary_face)
                 self.last_detection = {
@@ -383,60 +393,74 @@ class SmartWearApp:
                     "profile": profile or {},
                     "accessories": accessory_status,
                 }
-                self.draw_face_box(frame, primary_face, name)
+
+                self.identity_text.set(name if name != "Unknown" else "Unknown")
                 self.accessory_text.set(
-                    f"{accessory_status['mask']} | {accessory_status['glasses']} | "
-                    f"Confidence: {accessory_status['confidence']} | Source: {accessory_status.get('source', 'n/a')}"
+                    f"Mask: {accessory_status['mask']} | Glasses: {accessory_status['glasses']} | "
+                    f"Glasses confidence: {accessory_status.get('glasses_confidence', 0.0):.2f}"
                 )
 
                 if name != "Unknown":
                     self.user_text.set(
-                        f"{name}\nRegistered: {profile.get('registered_on', 'Unknown')}\n"
+                        f"{name}\nRegistered on: {profile.get('registered_on', 'Unknown')}\n"
                         f"{profile.get('notes', 'No notes available')}"
                     )
-                    self.recognition_text.set(f"Recognized registered user: {name}")
-                    self.status_text.set("Registered face detected. Preparing details screen.")
+                    self.camera_state_text.set("Recognized")
+                    self.status_text.set("Registered face recognized. Opening the detail view shortly.")
                     self.recognition_streak = self.recognition_streak + 1 if self.detected_name == name else 1
                     self.detected_name = name
-                    if self.recognition_streak >= 8:
+                    self.draw_detection_overlay(display_frame, primary_face, name, True)
+                    if self.recognition_streak >= RECOGNITION_STREAK:
                         self.show_details_screen(name, profile or {}, accessory_status)
                         return
                 else:
                     self.detected_name = None
                     self.recognition_streak = 0
-                    self.recognition_text.set("Face detected but not registered.")
-                    self.user_text.set("Unknown user. Register the face to unlock the detail dashboard.")
-                    self.status_text.set("Face found. Awaiting a registered match.")
+                    self.camera_state_text.set("Scanning")
+                    self.status_text.set("Face detected, but it is not registered yet.")
+                    self.user_text.set("Unknown user. Use Register once to save this face for future scans.")
+                    self.draw_detection_overlay(display_frame, primary_face, "Unknown", False)
             else:
-                self.handle_no_face_state("Face detected, but encoding could not be created.")
+                self.handle_no_face_state("Face detected, but the encoding could not be created.")
         else:
-            self.handle_no_face_state("No face detected. Center your face inside the camera view.")
+            self.handle_no_face_state("No face detected. Center your face inside the guide.")
 
-        self.render_frame(frame)
+        if self.recognition_started_at is not None:
+            elapsed_ms = int((datetime.now() - self.recognition_started_at).total_seconds() * 1000)
+            if self.detected_name is None and elapsed_ms >= SCAN_WINDOW_MS:
+                self.render_frame(display_frame)
+                self.pause_scan()
+                return
+
+        self.draw_ellipse_guide(display_frame)
+        self.render_frame(display_frame)
         self.root.after(15, self.update_frame)
 
-    def draw_face_box(self, frame, face_box, name):
+    def draw_detection_overlay(self, frame, face_box, label, recognized):
         top, right, bottom, left = face_box
-        color = (0, 255, 0) if name != "Unknown" else (0, 200, 255)
+        color = (120, 240, 177) if recognized else (247, 201, 124)
         cv2.rectangle(frame, (left, top), (right, bottom), color, 2)
         cv2.rectangle(frame, (left, max(0, top - 34)), (right, top), color, -1)
-        cv2.putText(
-            frame,
-            name,
-            (left + 8, top - 10),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.7,
-            (10, 15, 22),
-            2,
-        )
+        cv2.putText(frame, label, (left + 8, top - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (10, 15, 22), 2)
+
+    def draw_ellipse_guide(self, frame):
+        height, width = frame.shape[:2]
+        overlay = frame.copy()
+        center = (width // 2, height // 2)
+        axes = (int(width * 0.18), int(height * 0.34))
+        cv2.ellipse(overlay, center, axes, 0, 0, 360, (137, 160, 183), 2, cv2.LINE_AA)
+        cv2.addWeighted(overlay, 0.98, frame, 0.02, 0, frame)
 
     def handle_no_face_state(self, status_message):
         self.detected_name = None
         self.recognition_streak = 0
+        self.latest_face_box = None
+        self.latest_face_encoding = None
         self.status_text.set(status_message)
-        self.recognition_text.set("Waiting for a registered face")
-        self.accessory_text.set("Accessories: --")
-        self.user_text.set("User profile not loaded")
+        self.camera_state_text.set("Scanning" if self.running else "Idle")
+        self.identity_text.set("Awaiting face")
+        self.accessory_text.set("Mask and glasses detection will appear here.")
+        self.user_text.set("No registered user in focus.")
 
     def render_frame(self, frame):
         display_frame = cv2.resize(frame, CAMERA_SIZE, interpolation=cv2.INTER_AREA)
@@ -446,226 +470,111 @@ class SmartWearApp:
         self.camera_label.configure(image=photo, text="")
         self.camera_label.image = photo
 
-    def open_registration(self):
-        if not self.running:
-            self.start_camera()
-        if not self.running:
+    def register_current_face(self):
+        if self.latest_frame is None or self.latest_face_box is None:
+            if not self.running:
+                self.start_camera()
+            messagebox.showinfo("Register face", "Hold one clear face inside the guide, then press Register again.")
+            return
+
+        if self.latest_face_encoding is None:
+            messagebox.showwarning("Register face", "A clear face encoding is not ready yet. Try again with better lighting.")
             return
 
         name = simpledialog.askstring("Register Face", "Enter the user's name:", parent=self.root)
         if not name:
             return
 
-        self.capture_registration(name.strip())
-
-    def capture_registration(self, name):
-        if not self.running or self.cap is None:
-            messagebox.showerror("Camera Error", "Start the camera before registering a face.")
+        accessories = self.accessory_detector.analyze(self.latest_frame, self.latest_face_box)
+        if accessories.get("mask") != "No Mask" or accessories.get("glasses") != "No Glasses":
+            messagebox.showwarning(
+                "Register Face",
+                "Registration works best with no mask or glasses. Please remove accessories and try again.",
+            )
             return
 
-        self.overlay_text.set("Remove accessories before registering face")
-        self.status_text.set("Registration started. Look straight into the camera with no mask or glasses.")
-
-        while self.running:
-            ok, frame = self.cap.read()
-            if not ok:
-                break
-
-            frame = cv2.flip(frame, 1)
-            preview = frame.copy()
-            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            face_locations = face_recognition.face_locations(rgb_frame)
-
-            message = "Align one face inside the frame"
-            color = (0, 255, 255)
-
-            if len(face_locations) == 1:
-                face_box = face_locations[0]
-                top, right, bottom, left = face_box
-                cv2.rectangle(preview, (left, top), (right, bottom), (0, 255, 255), 2)
-                accessories = self.accessory_detector.analyze(frame, face_box)
-
-                # Accessory detector returns mask/glasses labels — consider registration clear
-                accessories_clear = (
-                    str(accessories.get("mask", "")).lower().startswith("no")
-                    and str(accessories.get("glasses", "")).lower().startswith("no")
-                )
-                if accessories_clear:
-                    encodings = face_recognition.face_encodings(rgb_frame, [face_box])
-                    if encodings:
-                        self.registry.register(name, encodings[0])
-                        self.overlay_text.set("Face registration requires a clean face capture.")
-                        self.status_text.set(f"{name} registered successfully.")
-                        self.recognition_text.set(f"Registered user ready: {name}")
-                        self.user_text.set(
-                            f"{name}\nRegistered: {datetime.now().strftime('%d %b %Y, %I:%M %p')}\n"
-                            "Profile captured with accessory-free registration."
-                        )
-                        cv2.destroyWindow("Face Registration")
-                        messagebox.showinfo("Registration Complete", f"{name} has been registered successfully.")
-                        return
-                else:
-                    message = "Remove accessories before registering face"
-                    color = (0, 170, 255)
-            elif len(face_locations) > 1:
-                message = "Only one face can be registered at a time"
-                color = (0, 140, 255)
-
-            cv2.putText(preview, message, (18, 36), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
-            cv2.putText(
-                preview,
-                "Press ESC to cancel registration",
-                (18, preview.shape[0] - 24),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.65,
-                (220, 220, 220),
-                2,
-            )
-            cv2.imshow("Face Registration", preview)
-
-            key = cv2.waitKey(1) & 0xFF
-            if key == 27:
-                break
-
-        self.overlay_text.set("Face registration requires a clean face capture.")
-        self.status_text.set("Registration cancelled.")
-        cv2.destroyWindow("Face Registration")
+        self.registry.register(name.strip(), self.latest_face_encoding)
+        self.status_text.set(f"{name.strip()} registered successfully.")
+        self.identity_text.set(name.strip())
+        self.user_text.set(
+            f"{name.strip()}\nRegistered on: {datetime.now().strftime('%d %b %Y, %I:%M %p')}\n"
+            "Profile captured from the desktop live scanner."
+        )
+        messagebox.showinfo("Registration complete", f"{name.strip()} has been registered successfully.")
+        self.paused = True
+        self.running = False
+        self.camera_state_text.set("Stopped")
+        if self.cap is not None:
+            self.cap.release()
+            self.cap = None
+        self.update_button_state()
 
     def show_details_screen(self, name, profile, accessories):
         self.stop_camera()
-        self.overlay_text.set("Face registration requires a clean face capture.")
 
         if self.details_window is not None and self.details_window.winfo_exists():
             self.details_window.destroy()
 
-        weather = self.fetch_weather(self.weather_city.get().strip() or "Delhi")
+        weather = get_weather(self.weather_city.get().strip() or "Delhi")
         recommendations = generate_recommendation(
             weather=weather,
-            is_mask="No" not in str(accessories.get("mask", "")),
-            is_glasses="No" not in str(accessories.get("glasses", "")),
+            is_mask=accessories.get("mask") == "Mask",
+            is_glasses=accessories.get("glasses") == "Glasses",
         )
 
-        detail_window = tk.Toplevel(self.root)
-        detail_window.title(f"{name} | SmartWear Detail View")
-        detail_window.configure(bg=BG_PRIMARY)
-        detail_window.geometry("980x720")
-        detail_window.minsize(900, 660)
+        detail_window = tk.Toplevel(self.root, bg=BG_PRIMARY)
+        detail_window.title(f"{name} | SmartWear detail")
+        detail_window.geometry("1080x760")
+        detail_window.minsize(980, 700)
         self.details_window = detail_window
 
         header = tk.Frame(detail_window, bg=BG_PRIMARY)
         header.pack(fill="x", padx=24, pady=(22, 16))
-        tk.Label(
-            header,
-            text=f"Recognized: {name}",
-            font=("Segoe UI Semibold", 24),
-            fg=TEXT_PRIMARY,
-            bg=BG_PRIMARY,
-        ).pack(anchor="w")
-        tk.Label(
-            header,
-            text="User profile, accessory status, and weather-aware recommendations",
-            font=("Segoe UI", 11),
-            fg=TEXT_SECONDARY,
-            bg=BG_PRIMARY,
-        ).pack(anchor="w", pady=(4, 0))
+        tk.Label(header, text="Identity snapshot", font=("Segoe UI", 10, "bold"), fg=TEXT_DIM, bg=BG_PRIMARY).pack(anchor="w")
+        tk.Label(header, text=f"{name}", font=("Segoe UI Semibold", 30), fg=TEXT_PRIMARY, bg=BG_PRIMARY).pack(anchor="w", pady=(4, 0))
+        tk.Label(header, text="Desktop detail view with accessory readout and weather-aware recommendations.", font=("Segoe UI", 11), fg=TEXT_SECONDARY, bg=BG_PRIMARY).pack(anchor="w", pady=(6, 0))
 
         grid = tk.Frame(detail_window, bg=BG_PRIMARY)
         grid.pack(fill="both", expand=True, padx=24, pady=(0, 20))
-        grid.grid_columnconfigure(0, weight=1)
-        grid.grid_columnconfigure(1, weight=1)
-        grid.grid_rowconfigure(1, weight=1)
+        for column in range(2):
+            grid.grid_columnconfigure(column, weight=1)
 
-        self.detail_card(
-            grid,
-            "User Details",
-            [
-                f"Name: {name}",
-                f"Registered On: {profile.get('registered_on', 'Unknown')}",
-                f"Profile Notes: {profile.get('notes', 'No notes saved')}",
-            ],
-            0,
-            0,
-        )
-        self.detail_card(
-            grid,
-            "Face & Accessory Status",
-            [
-                "Recognition: Registered face matched successfully",
-                f"Mask: {accessories['mask']}",
-                f"Glasses: {accessories['glasses']}",
-                f"Detector Confidence: {accessories['confidence']}",
-                f"Detector Source: {accessories.get('source', 'n/a')}",
-            ],
-            0,
-            1,
-        )
-        self.detail_card(
-            grid,
-            "Weather Snapshot",
-            [
-                f"City: {weather['city']}",
-                f"Temperature: {weather['temp']} C",
-                f"Condition: {weather['condition'].title()}",
-                f"Humidity: {weather['humidity']}%",
-            ],
-            1,
-            0,
-        )
-        self.detail_card(
-            grid,
-            "Recommendations",
-            recommendations,
-            1,
-            1,
-        )
+        self.detail_card(grid, "User details", [
+            f"Name: {name}",
+            f"Registered on: {profile.get('registered_on', 'Unknown')}",
+            f"Profile notes: {profile.get('notes', 'No notes saved')}",
+        ], 0, 0)
+        self.detail_card(grid, "Accessory readout", [
+            f"Mask: {accessories.get('mask', 'Unknown')}",
+            f"Glasses: {accessories.get('glasses', 'Unknown')}",
+            f"Mask confidence: {accessories.get('mask_confidence', 0.0):.2f}",
+            f"Glasses confidence: {accessories.get('glasses_confidence', 0.0):.2f}",
+        ], 0, 1)
+        self.detail_card(grid, "Weather snapshot", [
+            f"Location: {weather.get('city', 'Unknown')}",
+            f"Temperature: {weather.get('temp', '--')} C",
+            f"Condition: {weather.get('description', weather.get('condition', 'Unknown'))}",
+            f"Humidity: {weather.get('humidity', '--')}%",
+        ], 1, 0)
+        self.detail_card(grid, "Recommendations", recommendations, 1, 1)
 
         footer = tk.Frame(detail_window, bg=BG_PRIMARY)
         footer.pack(fill="x", padx=24, pady=(0, 24))
-        self.make_button(footer, "Return to Live Camera", self.restart_session).pack(side="left")
+        self.make_button(footer, "Return to live scanner", self.restart_session, fill=ACCENT).pack(side="left")
 
     def detail_card(self, parent, title, lines, row, column):
-        card = tk.Frame(parent, bg=BG_CARD)
+        card = tk.Frame(parent, bg=BG_CARD, highlightbackground="#2b476f", highlightthickness=1)
         card.grid(row=row, column=column, sticky="nsew", padx=(0, 16) if column == 0 else (0, 0), pady=(0, 16))
-        tk.Label(
-            card,
-            text=title,
-            font=("Segoe UI Semibold", 14),
-            fg=TEXT_PRIMARY,
-            bg=BG_CARD,
-        ).pack(anchor="w", padx=18, pady=(18, 10))
+        tk.Label(card, text=title, font=("Segoe UI Semibold", 15), fg=TEXT_PRIMARY, bg=BG_CARD).pack(anchor="w", padx=18, pady=(18, 12))
         for line in lines:
-            tk.Label(
-                card,
-                text=line,
-                font=("Segoe UI", 11),
-                fg=TEXT_SECONDARY if "Recommendation" not in title else TEXT_PRIMARY,
-                bg=BG_CARD,
-                wraplength=390,
-                justify="left",
-            ).pack(anchor="w", padx=18, pady=(0, 8))
+            tk.Label(card, text=line, font=("Segoe UI", 11), fg=TEXT_SECONDARY if title != "Recommendations" else TEXT_PRIMARY, bg=BG_CARD, wraplength=420, justify="left").pack(anchor="w", padx=18, pady=(0, 10))
 
     def restart_session(self):
         if self.details_window is not None and self.details_window.winfo_exists():
             self.details_window.destroy()
         self.details_window = None
+        self.refresh_weather()
         self.start_camera()
-
-    def fetch_weather(self, city):
-        try:
-            return get_weather(city)
-        except Exception:
-            return self.build_weather_snapshot(city)
-
-    def build_weather_snapshot(self, city):
-        city_key = city.lower()
-        presets = {
-            "delhi": {"temp": 32, "condition": "sunny", "humidity": 34},
-            "mumbai": {"temp": 29, "condition": "humid", "humidity": 76},
-            "bangalore": {"temp": 24, "condition": "cloudy", "humidity": 58},
-            "london": {"temp": 12, "condition": "cold", "humidity": 72},
-        }
-        data = presets.get(city_key, {"temp": 26, "condition": "clear", "humidity": 50})
-        return {"city": city.title(), **data}
 
     def on_close(self):
         self.stop_camera()
@@ -678,7 +587,7 @@ class SmartWearApp:
 def run():
     require_face_recognition()
     root = tk.Tk()
-    app = SmartWearApp(root)
+    SmartWearApp(root)
     root.mainloop()
 
 

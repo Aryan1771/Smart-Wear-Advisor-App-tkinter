@@ -1,29 +1,35 @@
 import os
+
 import requests
 
-def get_weather(query):
-    # Use the actual key string directly if not using environment variables
-    api_key = ""
-    
-    # Default fallback data
-    fallback = {
-        "city": query,
+OWM_API_KEY = os.getenv("OWM_API_KEY", "").strip()
+
+
+def _fallback(query):
+    return {
+        "city": str(query or "Unknown"),
         "temp": 25,
         "humidity": 50,
-        "condition": "clear"
+        "condition": "clear",
+        "description": "Clear sky",
     }
 
-    try:
-        # Determine if query is coordinates (lat,lon) or a city name
-        params = {"appid": api_key, "units": "metric"}
-        
-        if "," in str(query) and any(char.isdigit() for char in str(query)):
-            lat, lon = query.split(",")
-            params["lat"] = lat.strip()
-            params["lon"] = lon.strip()
-        else:
-            params["q"] = query
 
+def get_weather(query):
+    fallback = _fallback(query)
+    if not OWM_API_KEY:
+        return fallback
+
+    params = {"appid": OWM_API_KEY, "units": "metric"}
+    query_value = str(query or "").strip()
+    if "," in query_value and any(char.isdigit() for char in query_value):
+        lat, lon = query_value.split(",", 1)
+        params["lat"] = lat.strip()
+        params["lon"] = lon.strip()
+    else:
+        params["q"] = query_value or "Delhi"
+
+    try:
         response = requests.get(
             "https://api.openweathermap.org/data/2.5/weather",
             params=params,
@@ -32,13 +38,13 @@ def get_weather(query):
         response.raise_for_status()
         payload = response.json()
 
-        # payload.get("name") converts the coordinates back into the actual city name
         return {
-            "city": payload.get("name", query),
-            "temp": int(payload.get("main", {}).get("temp", 25)),
-            "humidity": payload.get("main", {}).get("humidity", 50),
-            "condition": payload.get("weather", [{}])[0].get("main", "clear").lower(),
+            "city": payload.get("name", fallback["city"]),
+            "temp": int(round(payload.get("main", {}).get("temp", fallback["temp"]))),
+            "humidity": int(payload.get("main", {}).get("humidity", fallback["humidity"])),
+            "condition": payload.get("weather", [{}])[0].get("main", fallback["condition"]).lower(),
+            "description": payload.get("weather", [{}])[0].get("description", fallback["description"]).title(),
         }
-    except Exception as e:
-        print(f"Weather API Error: {e}")
+    except Exception as error:
+        print(f"[Weather] API error: {error}")
         return fallback
