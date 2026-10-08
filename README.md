@@ -49,12 +49,16 @@ python -m venv .venv
 ### 2. Install dependencies
 
 ```powershell
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 ```
 
 Some dependencies, especially `dlib` and `face-recognition`, may require platform-specific build tools.
 
-### 3. Run the desktop app
+### 3. Configure weather access
+
+Set `OWM_API_KEY` in the process environment for live OpenWeatherMap data. Without a key, or when the request fails, the application uses fixed fallback weather values; those values are not live measurements.
+
+### 4. Run the desktop app
 
 ```powershell
 python mainapp.py
@@ -62,13 +66,15 @@ python mainapp.py
 
 ## Model Workflow
 
-The repository includes local model files under `models/`. If model files are missing or you want to retrain them:
+The runtime expects `models/mask_model.tflite` and `models/glasses_model.tflite`. Verify both files exist and load successfully; a `.keras` file alone does not satisfy the TFLite runtime. Dataset download and training scripts are provided:
 
 ```powershell
 python ai_model\download_datasets.py
 python ai_model\train_model.py
 python mainapp.py
 ```
+
+Check the training script's outputs and convert or supply the required TFLite files before expecting accessory inference to work.
 
 ## Recommendation Logic
 
